@@ -278,7 +278,16 @@ void bdm_start() {
 	bdm_send(0x01, 1);
 	bdm_read(bdm_data, 2);
 	delay1024TC();
-	delay1024TC();
+	
+	if(bdm_data[1] == 0xC0) {
+		sprintf((char *)uart_tx_msg, "bdm_start ready\n");
+		HAL_UART_Transmit(&huart1, uart_tx_msg, strlen((char *)uart_tx_msg), 1000);
+		HAL_Delay(100);
+	} else {
+		sprintf((char *)uart_tx_msg, "bdm_start fail 0x%02X%02X\n", bdm_data[0], bdm_data[1]);
+		HAL_UART_Transmit(&huart1, uart_tx_msg, strlen((char *)uart_tx_msg), 1000);
+		HAL_Delay(100);
+	}		
 }
 
 void bdm_read_address(uint16_t address) {
@@ -310,7 +319,7 @@ int main(void)
 
   /* USER CODE BEGIN Init */
 	static uint16_t address = 0x00;
-	static uint16_t address_e = 0xffff;
+	static uint16_t address_e = 0x20;
   /* USER CODE END Init */
 
   /* Configure the system clock */

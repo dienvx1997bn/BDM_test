@@ -19,6 +19,8 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "string.h"
+#include "stdio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -37,7 +39,7 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 volatile uint32_t bdm_ext[10] = {0};
-volatile uint8_t enable_ext = 0;
+volatile uint8_t enable_sync = 0;
 volatile uint8_t bdm_wait_ack = 0;
 volatile uint8_t bdm_wait_rx = 0;
 volatile uint32_t bdm_wait_rx_time = 0;
@@ -47,11 +49,16 @@ volatile uint32_t delay_1TC, delay_4TC, delay_10TC, delay_12TC, delay_end;
 
 uint8_t bdm_data[10] = {0};
 volatile uint32_t temp[24];
+
+uint8_t uart_tx_msg[20] = "Hello test Dien!\n";
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 
 TIM_HandleTypeDef htim2;
+
+UART_HandleTypeDef huart1;
+DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
 
@@ -61,6 +68,8 @@ TIM_HandleTypeDef htim2;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_DMA_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -77,7 +86,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
    */
 	static uint8_t count = 0;
 	
-	if(enable_ext) {
+	if(enable_sync) {
 		bdm_ext[count] = __HAL_TIM_GetCounter(&htim2);
 		count++;
 		
@@ -89,52 +98,19 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 			delay_12TC = delay_4TC * 3;
 			delay_10TC = delay_4TC * 5 /2;
 			delay_end = sync_time_captured /8;
-			enable_ext = 0;
+			enable_sync = 0;
 			count = 0;
 		}
 	}
 	if(bdm_wait_ack) {	//wait for ack
-		if(HAL_GPIO_ReadPin(BDM_PIN_GPIO_Port, GPIO_PIN_8) == 1) {
+		if(HAL_GPIO_ReadPin(BDM_PIN_GPIO_Port, GPIO_PIN_8)) {
 			bdm_wait_ack = 0;
 		}
 	}
-	if(bdm_wait_rx == 1) {
+	if(bdm_wait_rx) {
 		bdm_wait_rx_time = __HAL_TIM_GetCounter(&htim2);
 		bdm_wait_rx = 0;
 	}
-}
-
-static void bdm_sync() {
-	//config as output
-	GPIO_InitTypeDef GPIO_InitStruct = {0};
-	GPIO_InitStruct.Pin = BDM_PIN_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-	HAL_GPIO_Init(BDM_PIN_GPIO_Port, &GPIO_InitStruct);
-	
-	//set high for 1ms
-	HAL_GPIO_WritePin(BDM_PIN_GPIO_Port, BDM_PIN_Pin, GPIO_PIN_SET);
-	HAL_Delay(1);
-	//set low for 1ms
-	HAL_GPIO_WritePin(BDM_PIN_GPIO_Port, BDM_PIN_Pin, GPIO_PIN_RESET);
-	HAL_Delay(1);
-	enable_ext = 1;
-	
-	//reset counter
-	__HAL_TIM_SetCounter(&htim2, 0);
-	
-	//tongle high
-	HAL_GPIO_WritePin(BDM_PIN_GPIO_Port, BDM_PIN_Pin, GPIO_PIN_SET);
-	//wait sync
-	/*Configure GPIO pin : BDM_PIN_Pin */
-	GPIO_InitStruct.Pin = BDM_PIN_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	HAL_GPIO_Init(BDM_PIN_GPIO_Port, &GPIO_InitStruct);
-	
-	//wait sync success
-	while(enable_ext);
 }
 
 static __inline void delay4TC() {
@@ -205,6 +181,28 @@ static __inline void bdm_pin_cfg_output() {
 	GPIOC->OSPEEDR |= (3<<16);
 }
 
+static void bdm_sync(uint8_t sync_enable) {
+	bdm_pin_cfg_output();
+	//set low for 1ms
+	HAL_GPIO_WritePin(BDM_PIN_GPIO_Port, BDM_PIN_Pin, GPIO_PIN_RESET);
+	HAL_Delay(2);
+	enable_sync = sync_enable;
+	
+	//reset counter
+	__HAL_TIM_SetCounter(&htim2, 0);
+	
+	//tongle high
+	HAL_GPIO_WritePin(BDM_PIN_GPIO_Port, BDM_PIN_Pin, GPIO_PIN_SET);
+	//wait sync
+	bdm_pin_cfg_ext();
+	
+	//wait sync success
+	if(enable_sync)
+		while(enable_sync);
+	else
+		HAL_Delay(1);
+}
+
 static __inline void bdm_tx_1() {
 	//pull low
 	HAL_GPIO_WritePin(BDM_PIN_GPIO_Port, BDM_PIN_Pin, GPIO_PIN_RESET);
@@ -239,7 +237,6 @@ static __inline void bdm_tx_0() {
 
 static __inline uint8_t bdm_rx() {/*Configure GPIO pin : PC9 */
 	uint8_t ret = 0;
-	static uint8_t temp_count = 0;
 	//pull low
 	//reset counter
 	__HAL_TIM_SetCounter(&htim2, 0);
@@ -254,17 +251,8 @@ static __inline uint8_t bdm_rx() {/*Configure GPIO pin : PC9 */
 	bdm_wait_rx = 1;
 	bdm_pin_cfg_ext();
 	while(bdm_wait_rx == 1);
-//	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_9);
 	
-//	//test 2
-//	bdm_pin_cfg_highZ();
-
-//	while(HAL_GPIO_ReadPin(BDM_PIN_GPIO_Port, BDM_PIN_Pin) == 0);
-//	bdm_wait_rx_time = __HAL_TIM_GetCounter(&htim2);
-	//end test
-	
-//	temp[temp_count ++] = bdm_wait_rx_time;
-	if(bdm_wait_rx_time <= delay_10TC) {
+	if(bdm_wait_rx_time < delay_12TC) {
 		ret = 1;
 	}
 	
@@ -298,12 +286,57 @@ void bdm_send(uint8_t command, uint8_t ack) {
 }
 
 void bdm_read(uint8_t *byte, uint8_t len) {
+	memset(byte, 0, len);
 	int x, i = 0;
 	for(x = 0; x < len; x++) {
 		for(i = 0; i <= 7; i++) {
-			byte[x] |= (bdm_rx() << i);
+			byte[x] |= (bdm_rx() << (7-i));
 		}
 	}
+}
+
+void bdm_soft_reset() {
+	bdm_pin_cfg_output();
+	//	HAL_GPIO_WritePin(BDM_PIN_GPIO_Port, BDM_PIN_Pin, GPIO_PIN_RESET);
+	HAL_Delay(220);
+	
+	//tongle high
+	HAL_GPIO_WritePin(BDM_PIN_GPIO_Port, BDM_PIN_Pin, GPIO_PIN_SET);
+	
+	//wait sync
+	bdm_pin_cfg_ext();
+	HAL_Delay(110);
+}
+
+void bdm_start() {
+	bdm_sync(1);
+	delay1024TC();
+	bdm_send(0xD5, 1);	//ACK_ENABLE
+	bdm_send(0xE4, 0);	//READ_BD_BYTE
+	bdm_send(0xFF, 0);
+	bdm_send(0x01, 1);
+	bdm_read(bdm_data, 2);
+	delay1024TC();
+	
+	if(bdm_data[1] == 0x80) {
+		sprintf((char *)uart_tx_msg, "bdm_start ready\n");
+		HAL_UART_Transmit(&huart1, uart_tx_msg, strlen((char *)uart_tx_msg), 1000);
+		HAL_Delay(100);
+	} else {
+		sprintf((char *)uart_tx_msg, "bdm_start fail 0x%02X%02X\n", bdm_data[0], bdm_data[1]);
+		HAL_UART_Transmit(&huart1, uart_tx_msg, strlen((char *)uart_tx_msg), 1000);
+		HAL_Delay(100);
+	}		
+}
+
+void bdm_read_address(uint16_t address) {
+	delay1024TC();
+	bdm_send(0xD5, 1);	//ACK_ENABLE
+	bdm_send(0xE8, 0);	//READ_BD_BYTE
+	bdm_send(address >> 8, 0);
+	bdm_send(address & 0xFF, 1);
+	bdm_read(bdm_data, 2);
+//	HAL_UART_Transmit_DMA(&huart1, bdm_data, 2);
 }
 
 /* USER CODE END 0 */
@@ -331,26 +364,42 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+	static uint16_t address = 0x00;
+	static uint16_t address_e = 0xFFF0;
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM2_Init();
+  MX_DMA_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start(&htim2);
 
-	bdm_sync();
-	delay1024TC();
+	HAL_UART_Transmit(&huart1, uart_tx_msg, strlen((char *)uart_tx_msg), 100);
+	HAL_Delay(10);
 	
-	bdm_send(0xD5, 1);	//ACK_ENABLE
+//	bdm_pin_reset();
+	bdm_pin_cfg_output();
+	//set low for 1ms
+	HAL_GPIO_WritePin(BDM_PIN_GPIO_Port, BDM_PIN_Pin, GPIO_PIN_SET);
+	HAL_Delay(1000);
+		
+	bdm_start();
+	bdm_soft_reset();
 	
-	bdm_send(0xE4, 0);	//READ_BD_BYTE
-	bdm_send(0xFF, 0);
-	bdm_send(0x01, 1);
-	bdm_read(bdm_data, 2);
+	bdm_start();
+	HAL_Delay(20);
 
-	bdm_sync();
+	while(address <= address_e) {
+		sprintf((char *)uart_tx_msg, "addr %04X: ", address);
+		HAL_UART_Transmit(&huart1, uart_tx_msg, strlen((char *)uart_tx_msg), 1000);
+		bdm_sync(0);
+		bdm_read_address(address);
+		sprintf((char *)uart_tx_msg, "%02X%02X\n", bdm_data[0], bdm_data[1]);
+		HAL_UART_Transmit(&huart1, uart_tx_msg, strlen((char *)uart_tx_msg), 1000);
+		address +=2;
+	}
 	
   /* USER CODE END 2 */
 
@@ -446,9 +495,9 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4294967295;
+  htim2.Init.Period = 65535;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
   {
     Error_Handler();
@@ -471,6 +520,70 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -480,11 +593,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(BDM_PIN_GPIO_Port, BDM_PIN_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : BDM_PIN_Pin */
   GPIO_InitStruct.Pin = BDM_PIN_Pin;
