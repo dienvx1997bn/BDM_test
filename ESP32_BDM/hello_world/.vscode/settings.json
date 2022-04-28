@@ -1,0 +1,17 @@
+{
+  "C_Cpp.intelliSenseEngine": "Tag Parser",
+  "idf.flashType": "UART",
+  "idf.port": "/dev/ttyUSB0",
+  "files.associations": {
+    "ratio": "c",
+    "array": "c",
+    "bitset": "c",
+    "string_view": "c",
+    "initializer_list": "c",
+    "regex": "c",
+    "utility": "c",
+    "string": "c",
+    "*.inc": "c"
+  },
+  "idf.adapterTargetName": "esp32"
+}
